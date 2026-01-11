@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="ml">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D Gesture Control - Portrait Mode</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: #000; 
+            font-family: sans-serif; 
+            touch-action: none; 
+        }
+        #video-container {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%) scaleX(-1);
+            width: 140px; 
+            height: 105px;
+            border: 2px solid #0ff;
+            border-radius: 12px;
+            overflow: hidden;
+            z-index: 10;
+            background: #111;
+        }
+        #ui-overlay {
+            position: absolute;
+            top: 40px;
+            left: 0;
+            right: 0;
+            color: white;
+            text-align: center;
+            pointer-events: none;
+            z-index: 20;
+            padding: 0 20px;
+        }
+        .status-badge {
+            display: inline-block;
+            background: rgba(0, 255, 255, 0.15);
+            padding: 6px 14px;
+            border-radius: 20px;
+            border: 1px solid #0ff;
+            margin-top: 10px;
+            font-size: 13px;
+            backdrop-filter: blur(5px);
+        }
+        #modal {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.98);
+            color: white;
+            padding: 20px;
+            border: 1px solid #ff00ff;
+            box-shadow: 0 0 25px rgba(255, 0, 255, 0.5);
+            border-radius: 20px;
+            z-index: 100;
+            text-align: center;
+            width: 90vw;
+            max-height: 80vh;
+        }
+        #modal img {
+            max-width: 100%;
+            max-height: 50vh;
+            border-radius: 12px;
+            margin: 15px auto;
+            object-fit: contain;
+            border: 1px solid #333;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-overlay">
+        <h1 class="text-2xl font-bold tracking-tight">3D ജെസ്റ്റർ കൺട്രോൾ</h1>
+        <p class="text-sm opacity-70 mt-1">ചൂണ്ടുവിരൽ നീക്കി മാറ്റുക <br> കൈ നിവർത്തിയാൽ ഫോട്ടോ കാണാം</p>
+        <div id="status" class="status-badge">ക്യാമറ തയ്യാറാക്കുന്നു...</div>
+    </div>
+
+    <div id="video-container">
+        <video id="input-video" playsinline style="width: 100%; height: 100%; object-fit: cover;"></video>
+    </div>
+
+    <div id="modal">
+        <h2 id="modal-title" class="text-xl font-bold mb-1"></h2>
+        <div id="modal-content"></div>
+        <p class="text-xs text-gray-400 mt-3 mb-4">മുഷ്ടി മടക്കിയാൽ ഇത് അടയ്ക്കാം</p>
+        <button onclick="closeModal()" class="w-full bg-gradient-to-r from-pink-600 to-purple-600 py-3 rounded-xl text-white font-bold">Close</button>
+    </div>
+
+    <script>
+        let scene, camera, renderer, cards = [];
+        let currentIndex = 0;
+        let lastIndexX = 0;
+        let isOpeningGesture = false;
+        let isClosingGesture = false;
+        
+        const statusEl = document.getElementById('status');
+        const modal = document.getElementById('modal');
+        const modalTitle = document.getElementById('modal-title');
+        const modalContent = document.getElementById('modal-content');
+
+        const cardData = [
+            { id: 0, name: "കാർഡ് 1 (നീല)", color: 0x00ffff, image: "https://i.postimg.cc/Y0KvDgDx/generated-image-0553e8c2-bee8-4819-b8b4-76d3d24300e8.png" },
+            { id: 1, name: "കാർഡ് 2 (പിങ്ക്)", color: 0xff00ff, image: "https://i.postimg.cc/x1xD65Jr/A-very-beautiful-2k-202601102237.jpg" }
+        ];
+
+        function initThree() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+            scene.add(ambientLight);
+            
+            const pointLight = new THREE.PointLight(0xffffff, 1);
+            pointLight.position.set(5, 5, 5);
+            scene.add(pointLight);
+
+            cardData.forEach((data, index) => {
+                const w = 2.2;
+                const h = 3.5;
+                const geometry = new THREE.BoxGeometry(w, h, 0.1);
+                const material = new THREE.MeshPhongMaterial({ 
+                    color: data.color, 
+                    shininess: 100,
+                    emissive: data.color,
+                    emissiveIntensity: 0.2
+                });
+                const card = new THREE.Mesh(geometry, material);
+                
+                const glowGeo = new THREE.BoxGeometry(w + 0.1, h + 0.1, 0.12);
+                const glowMat = new THREE.MeshBasicMaterial({ color: data.color, wireframe: true, transparent: true, opacity: 0.3 });
+                card.add(new THREE.Mesh(glowGeo, glowMat));
+
+                card.userData = data;
+                scene.add(card);
+                cards.push(card);
+            });
+
+            camera.position.z = 7;
+            updateCardPositions();
+        }
+
+        function updateCardPositions() {
+            const spacing = 4.5;
+            cards.forEach((card, i) => {
+                card.targetX = (i - currentIndex) * spacing;
+                card.targetZ = i === currentIndex ? 0 : -3;
+                card.targetScale = i === currentIndex ? 1.2 : 0.6;
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            cards.forEach(card => {
+                card.position.x += (card.targetX - card.position.x) * 0.12;
+                card.position.z += (card.targetZ - card.position.z) * 0.12;
+                const s = card.scale.x + (card.targetScale - card.scale.x) * 0.12;
+                card.scale.set(s, s, s);
+                card.rotation.y = Math.sin(Date.now() * 0.0015) * 0.15;
+            });
+            renderer.render(scene, camera);
+        }
+
+        const videoElement = document.getElementById('input-video');
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
+        });
+
+        hands.onResults((results) => {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                statusEl.innerText = "കൈകൾ കണ്ടെത്തി ✅";
+                const landmarks = results.multiHandLandmarks[0];
+                const palmBase = landmarks[0];
+                const indexTip = landmarks[8];
+                
+                // 1. Swipe Logic (Index finger X movement)
+                const currentX = indexTip.x;
+                const swipeDiff = currentX - lastIndexX;
+                if (modal.style.display !== 'block' && Math.abs(swipeDiff) > 0.15) {
+                    if (swipeDiff > 0 && currentIndex > 0) { currentIndex = 0; updateCardPositions(); }
+                    else if (swipeDiff < 0 && currentIndex < 1) { currentIndex = 1; updateCardPositions(); }
+                    lastIndexX = currentX;
+                }
+
+                // Tips: 8(Index), 12(Middle), 16(Ring), 20(Pinky)
+                const fingerTips = [8, 12, 16, 20];
+                
+                // 2. Open Gesture (Palm extended)
+                let extendedCount = 0;
+                fingerTips.forEach(id => {
+                    const d = Math.sqrt(Math.pow(landmarks[id].x-palmBase.x,2)+Math.pow(landmarks[id].y-palmBase.y,2));
+                    if (d > 0.32) extendedCount++;
+                });
+
+                if (extendedCount >= 4 && modal.style.display !== 'block' && !isOpeningGesture) {
+                    isOpeningGesture = true;
+                    openCard(cards[currentIndex].userData);
+                } else if (extendedCount < 2) {
+                    isOpeningGesture = false;
+                }
+
+                // 3. Close Gesture (Fist)
+                let foldedCount = 0;
+                fingerTips.forEach(id => {
+                    const d = Math.sqrt(Math.pow(landmarks[id].x-palmBase.x,2)+Math.pow(landmarks[id].y-palmBase.y,2));
+                    if (d < 0.18) foldedCount++;
+                });
+
+                if (foldedCount >= 4 && modal.style.display === 'block' && !isClosingGesture) {
+                    isClosingGesture = true;
+                    closeModal();
+                } else if (foldedCount < 2) {
+                    isClosingGesture = false;
+                }
+            } else {
+                statusEl.innerText = "കൈകൾക്കായി തിരയുന്നു...";
+            }
+        });
+
+        function openCard(data) {
+            modalTitle.innerText = data.name;
+            modal.style.borderColor = `#${data.color.toString(16).padStart(6, '0')}`;
+            modalContent.innerHTML = data.image ? `<img src="${data.image}">` : `<p class='py-10'>No Image</p>`;
+            modal.style.display = 'block';
+        }
+
+        function closeModal() { modal.style.display = 'none'; }
+
+        const cameraFeed = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({ image: videoElement }); },
+            width: 480, height: 640
+        });
+
+        window.onload = () => {
+            initThree();
+            animate();
+            cameraFeed.start().catch(() => statusEl.innerText = "ക്യാമറ ലഭ്യമല്ല");
+        };
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            updateCardPositions();
+        });
+    </script>
+</body>
+</html>
